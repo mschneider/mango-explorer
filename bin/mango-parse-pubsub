@@ -1,0 +1,81 @@
+import argparse
+import asyncio
+import logging
+import websockets
+import json
+import sys
+import os
+from solana.publickey import PublicKey
+
+sys.path.insert(0, os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")))
+import mango
+
+
+parser = argparse.ArgumentParser(description="Ensure a Mango account exists for the wallet and group.")
+mango.ContextBuilder.add_command_line_parameters(parser)
+args = parser.parse_args()
+
+
+logging.basicConfig(filename='mango.log')
+_logger = logging.getLogger('mango')
+_logger.addHandler(logging.FileHandler('mango.log'))
+
+
+class BookPuller:
+    def __init__(self) -> None:
+
+        self.context = mango.ContextBuilder.from_command_line_parameters(args)
+        # TODO derive wss url from context.client
+        self.cluster_url = "wss://mango.rpcpool.com"
+        self.group = mango.Group.load(self.context)
+        _logger.info(f"Group: {self.group}")
+
+        self.perpMarket = mango.PerpMarketDetails.load(self.context, PublicKey("DtEcjPLyD4YtTBB4q8xwFZ9q49W89xZCZtJyrGebi5t8"), self.group)
+
+        self.loop = asyncio.get_event_loop()
+
+    def run_loop(self):
+        self.loop.run_until_complete(self.client_listener())
+
+    async def client_listener(self):
+        async with websockets.connect(self.cluster_url) as socket:
+            await socket.send(self.build_account_subscribe_request(
+                0, "Bc8XaK5UTuDSCBtiESSUxBSb9t6xczhbAJnesPamMRir", "processed"))
+            _logger.info("Sent Subscription message.. looping over listener")
+            while True:
+                message = await socket.recv()
+                json_msg = json.loads(message)
+                _logger.info(f"Message recieved: {len(message)}")
+                if "method" in json_msg:
+                    _logger.info(f"Method: {json_msg['method']}")
+                if "params" in json_msg:
+                    _logger.info(
+                        f"Params: {json_msg['params']['result'].keys()}")
+                    acct_info = mango.AccountInfo.from_response(
+                        json_msg['params'], "Bc8XaK5UTuDSCBtiESSUxBSb9t6xczhbAJnesPamMRir")
+
+                    book_side = mango.PerpOrderBookSide.parse(self.context, acct_info, self.perpMarket)
+                    _logger.info(f"BookSide: {book_side}")
+
+
+
+    @staticmethod
+    def build_account_subscribe_request(id, address, commitment) -> str:
+        return """
+    {
+        "jsonrpc": "2.0",
+        "id": \"""" + str(id) + """\",
+        "method": "accountSubscribe",
+        "params": [\"""" + str(address) + """\",
+            {
+                "encoding": "base64",
+            "commitment": \"""" + str(commitment) + """\"
+            }
+        ]
+    }
+    """
+
+
+book = BookPuller()
+book.run_loop()
